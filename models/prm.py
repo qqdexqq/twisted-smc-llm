@@ -137,7 +137,17 @@ class QwenMathPRMScorer:
             from transformers import BitsAndBytesConfig
 
             kwargs["quantization_config"] = BitsAndBytesConfig(
-                load_in_8bit=load_in_8bit, load_in_4bit=load_in_4bit
+                load_in_8bit=load_in_8bit,
+                load_in_4bit=load_in_4bit,
+                # "score" is the final [hidden_dim -> 2] classification
+                # head (modeling_qwen2_rm.py: self.score(hidden_states)).
+                # bitsandbytes' int8 CUDA kernel errors on such a tiny
+                # output dimension on Turing-class GPUs (T4: "cublasLt ran
+                # into an error", found on a live run) -- found empirically,
+                # not documented anywhere obvious. This head is a trivial
+                # fraction of the model's size, so skipping its
+                # quantization costs effectively nothing.
+                llm_int8_skip_modules=["score"],
             )
         else:
             kwargs["torch_dtype"] = torch.bfloat16
