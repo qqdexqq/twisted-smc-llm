@@ -88,6 +88,33 @@ subset -- building all six manifests pulled ~6.7GB into `~/.cache/huggingface`
 cache afterward since the frozen `.jsonl` manifests are all any later stage
 reads from.
 
+## Stage 1 (GPU part): rollout corpus generation
+
+Not runnable on this laptop (no GPU). `notebooks/stage1_rollout_generation.ipynb`
+is a ready-to-upload Kaggle notebook: clone this repo, run the CPU-only
+`--dry-run` smoke test first (catches repo/env problems for free), install
+the GPU extras (`pip install -e ".[gpu]"` -- torch/transformers/vllm/
+bitsandbytes), run a tiny 3-problem real-GPU sanity check, then the full
+128-problem x 32-rollout MATH500 corpus with the 1.5B generator + strong
+PRM (loaded in 8-bit to fit alongside the generator on a 16GB free-tier
+GPU). See the notebook's own markdown cells for the free-tier setup steps
+(accelerator, internet, "Save & Run All" for unattended runs).
+
+`scripts/generate_rollouts.py` (+ `models/policy.py`, `models/prm.py`,
+`eval/metrics.py`) is the underlying pipeline. Its plumbing -- manifest
+loading, step-splitting, answer-checking, Parquet schema -- is fully
+tested on this laptop via `--dry-run` (CPU-only mocks); the real vLLM
+generation and PRM scoring paths are written to each model's documented
+API but **unverified until run on an actual GPU** -- sanity-check the
+sanity-check cell's output before trusting the full batch.
+
+One real bug this surfaced even without a GPU: `math-verify`'s per-call
+timeout spawns a fresh `multiprocessing.Process` on Windows (no
+`signal.alarm` there), which fails silently in this environment and made
+every answer look wrong regardless of correctness. Worked around by
+disabling that timeout (`eval/metrics.py`); should work fine as-is on the
+Linux GPU box, where the signal-based path is used instead.
+
 ## An honest finding from building this
 
 `tests/test_toy_gmm.py::test_cess_variance_vs_tuned_fixed`'s docstring

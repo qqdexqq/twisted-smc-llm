@@ -9,3 +9,9 @@ dist/
 results/
 *.npz
 figures/
+
+# Stage 1+ rollout corpus: large, expensive to regenerate, but belongs on
+# a persistent volume / object store, not in git (plan doc §11: "Use a
+# persistent network volume for the HF cache and the rollout corpus").
+data/
+scratch_debug_mv.py

@@ -12,3 +12,9 @@ dependencies:
       - pyyaml
       - datasets          # Stage 1: pulling benchmark manifests
       - huggingface_hub
+      - pandas
+      - pyarrow
+      - math-verify[antlr4_13_2]
+      # GPU-only extras (torch, transformers, vllm) are NOT here -- this
+      # env is for the laptop. Install `pip install -e ".[gpu]"` on the
+      # rented GPU box instead (see README's Stage 1 GPU section).

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "adaptive-tsmc"
 version = "0.0.1"
-description = "Stage 0: synthetic testbed for CESS-controlled adaptive tempering SMC"
+description = "Adaptive CESS-controlled tempering SMC for LLM reasoning"
 requires-python = ">=3.10"
 dependencies = [
     "numpy",
@@ -14,13 +14,19 @@ dependencies = [
     "pyyaml",
     "datasets",
     "huggingface_hub",
+    "pandas",
+    "pyarrow",
+    "math-verify[antlr4_13_2]",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest"]
+# GPU-only, not installable/usable on this laptop -- pulled in on the
+# rented box for real rollout generation (models/policy.py, models/prm.py).
+gpu = ["torch", "transformers>=4.40.0", "accelerate", "vllm", "bitsandbytes"]
 
 [tool.setuptools.packages.find]
-include = ["smc*", "toy*"]
+include = ["smc*", "toy*", "models*", "eval*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
