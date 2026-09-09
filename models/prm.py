@@ -72,11 +72,26 @@ class QwenMathPRMScorer:
         (~17GB > 16GB); 8-bit brings the PRM down to ~7-8GB.
         """
         import torch
-        from transformers import AutoModel, AutoTokenizer
+        from transformers import AutoConfig, AutoModel, AutoTokenizer
 
         self.model_id = model_id
         self.tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
-        kwargs = dict(device_map=device_map, trust_remote_code=True)
+
+        # Qwen2.5-Math-PRM-7B ships custom modeling code (trust_remote_code)
+        # written against an older transformers whose PretrainedConfig
+        # always defaulted pad_token_id to None. Recent transformers raises
+        # AttributeError on truly-unset config attributes instead, and this
+        # model's custom Qwen2RMConfig never sets pad_token_id explicitly --
+        # crashes inside their own __init__ (self.padding_idx =
+        # config.pad_token_id) before we ever get a chance to touch it.
+        # Fix: load the config first, force pad_token_id to exist (falling
+        # back to eos_token_id, matching the common Qwen convention of no
+        # separate pad token), then hand that patched config in explicitly.
+        config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+        if getattr(config, "pad_token_id", None) is None:
+            config.pad_token_id = getattr(config, "eos_token_id", None) or 0
+
+        kwargs = dict(config=config, device_map=device_map, trust_remote_code=True)
         if load_in_8bit or load_in_4bit:
             from transformers import BitsAndBytesConfig
 
