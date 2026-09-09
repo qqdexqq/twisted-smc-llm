@@ -70,15 +70,34 @@ def run(args: argparse.Namespace) -> dict:
     dataset_name = args.dataset_name or args.manifest.stem
     problems = load_manifest(args.manifest)
 
+    # Generate with the policy FIRST, then explicitly free it before ever
+    # touching the PRM. Found the hard way on a real T4: vLLM's engine
+    # eagerly pre-allocates and PERMANENTLY holds its weights + full KV
+    # cache pool (~11+ GiB on a 16GB card at gpu_memory_utilization=0.85)
+    # for as long as the LLM object is alive -- it does not release that
+    # just because generation finished. Loading a second, separate model
+    # (the PRM) while that's still resident starves it of GPU memory (it
+    # can silently partial-offload to CPU via device_map="auto", then
+    # OOM later inside the forward pass once real activation memory is
+    # needed). Never have both models resident on the GPU at once.
     policy = MockPolicy(seed=args.seed) if args.dry_run else VLLMPolicy(
         args.generator, quantization=args.quantization
     )
-    prm = build_prm_scorer(args.prm_type, args.prm, args.dry_run, load_in_8bit=args.prm_8bit)
-
     prompts = [p["prompt"] for p in problems]
     completions_per_prompt = policy.generate(
         prompts, n=args.n, temperature=args.temperature, max_tokens=args.max_tokens
     )
+
+    if not args.dry_run:
+        import gc
+
+        import torch
+
+        del policy
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    prm = build_prm_scorer(args.prm_type, args.prm, args.dry_run, load_in_8bit=args.prm_8bit)
 
     step_rows = []
     rollout_rows = []
