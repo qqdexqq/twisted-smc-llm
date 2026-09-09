@@ -31,6 +31,35 @@ from dataclasses import dataclass
 DEFAULT_SYSTEM_PROMPT = "Please reason step by step, and put your final answer within \\boxed{}."
 
 
+def _patch_dynamic_cache_from_legacy_cache() -> None:
+    """Qwen2.5-Math-PRM-7B's custom remote code (modeling_qwen2_rm.py)
+    calls DynamicCache.from_legacy_cache(past_key_values) in its forward()
+    -- a classmethod recent transformers removed entirely (the legacy
+    tuple-based KV-cache format was dropped in favor of always using Cache
+    objects). Same root cause as QwenMathPRMScorer's pad_token_id patch:
+    custom trust_remote_code written against an older transformers.
+    Restores the classmethod with its well-documented old behavior rather
+    than trying to rewrite Qwen's model file. Idempotent / safe to call
+    repeatedly -- no-ops if the method already exists (i.e. on an older
+    transformers where this was never removed).
+    """
+    from transformers import DynamicCache
+
+    if hasattr(DynamicCache, "from_legacy_cache"):
+        return
+
+    @classmethod
+    def from_legacy_cache(cls, past_key_values=None):
+        cache = cls()
+        if past_key_values is not None:
+            for layer_idx in range(len(past_key_values)):
+                key_states, value_states = past_key_values[layer_idx]
+                cache.update(key_states, value_states, layer_idx)
+        return cache
+
+    DynamicCache.from_legacy_cache = from_legacy_cache
+
+
 @dataclass
 class PRMScore:
     step_scores: list[float]  # one per step, in order, each in [0, 1]
@@ -73,6 +102,8 @@ class QwenMathPRMScorer:
         """
         import torch
         from transformers import AutoConfig, AutoModel, AutoTokenizer
+
+        _patch_dynamic_cache_from_legacy_cache()
 
         self.model_id = model_id
         self.tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
