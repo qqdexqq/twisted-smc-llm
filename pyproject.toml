@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "adaptive-tsmc"
+version = "0.0.1"
+description = "Stage 0: synthetic testbed for CESS-controlled adaptive tempering SMC"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["smc*", "toy*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

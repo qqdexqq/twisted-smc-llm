@@ -1,0 +1,16 @@
+# Stage 0 experiment config: fixed-linear-in-beta schedule -- the
+# non-adaptive baseline. n_steps=25 is a standalone default (not the
+# "tuned" step count used for the compute-matched comparison against CESS
+# in tests/test_toy_gmm.py::test_cess_variance_vs_tuned_fixed, which
+# derives its own T from a live CESS run instead of reading this file).
+
+target: gmm2d
+schedule: fixed
+n_particles: 1000
+gamma: 0.5
+n_steps: 25
+rwm_steps: 10
+cov_ridge: 1.0e-6
+max_steps: 3000
+n_seeds: 50
+seed_start: 0

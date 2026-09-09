@@ -1,0 +1,17 @@
+# Stage 0 experiment config: (plain) ESS-adaptive schedule -- the "free
+# ablation" from the plan doc §2.1. NOTE: at kappa >= gamma this schedule
+# needs far more steps than cess/fixed on this target (resampling almost
+# never triggers once ESS is pinned above the resample threshold -- see
+# smc/sampler.py's run_smc docstring), so n_seeds is intentionally lower.
+
+target: gmm2d
+schedule: ess
+n_particles: 1000
+gamma: 0.5
+kappa: 0.9
+n_iter: 30
+rwm_steps: 10
+cov_ridge: 1.0e-6
+max_steps: 3000
+n_seeds: 20
+seed_start: 0

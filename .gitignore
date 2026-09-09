@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# Stage 0 run outputs (regenerable — see scripts/run_stage0_experiment.py)
+results/
+*.npz
+figures/

@@ -1,0 +1,16 @@
+# Stage 0 experiment config: CESS-adaptive schedule on the 2-D GMM toy target.
+# Every run logs a hash of this file alongside its results (see
+# scripts/run_stage0_experiment.py) so results are always traceable to the
+# exact config that produced them.
+
+target: gmm2d          # toy/gmm2d.py::DEFAULT_TARGET
+schedule: cess          # fixed | ess | cess
+n_particles: 1000
+gamma: 0.5              # resample if ESS < gamma * N
+kappa: 0.9               # CESS target: kappa * N
+n_iter: 30               # bisection iterations
+rwm_steps: 10
+cov_ridge: 1.0e-6
+max_steps: 3000
+n_seeds: 50
+seed_start: 0
