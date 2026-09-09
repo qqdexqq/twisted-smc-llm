@@ -168,6 +168,8 @@ class QwenMathPRMScorer:
         return all_scores_res
 
     def score(self, query: str, steps: list[str], system: str = DEFAULT_SYSTEM_PROMPT) -> PRMScore:
+        import torch
+
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": query},
@@ -184,7 +186,17 @@ class QwenMathPRMScorer:
         # remote code (from_legacy_cache / get_usable_length /
         # to_legacy_cache, all removed Cache-API methods this custom
         # code still calls) -- more robust than patching each one.
-        outputs = self.model(input_ids=input_ids, use_cache=False)
+        #
+        # torch.no_grad(): .eval() only disables dropout/batchnorm, NOT
+        # autograd -- without this, every call built a full backward
+        # graph and retained every layer's activations for a gradient we
+        # never take. Found the hard way: survived a tiny 3-problem
+        # sanity check (small enough to fit despite the waste) but OOM'd
+        # partway into the real 128x32 run on a longer completion. The
+        # bnb.matmul autograd.Function.apply calls visible in that OOM's
+        # traceback were the tell -- gradients were being tracked at all.
+        with torch.no_grad():
+            outputs = self.model(input_ids=input_ids, use_cache=False)
         token_masks = input_ids == self._step_sep_id
         step_rewards = self._make_step_rewards(outputs[0], token_masks)
         return PRMScore(step_scores=step_rewards[0])
