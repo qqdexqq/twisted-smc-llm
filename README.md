@@ -61,6 +61,33 @@ sampler to be a meaningful baseline against), and cross-checking against
 the external `particles`/`blackjax` packages (neither installed; the
 corresponding test is `skipif`-guarded).
 
+## Stage 1 (no-GPU part): frozen manifests + model selection
+
+```
+python scripts/build_manifests.py
+```
+
+Pulls GSM8K / MATH500 / DeepMath / Omni-MATH / AIME 2024+2025 from the HF
+hub, draws a 128-problem random subset per dataset (seed=0; AIME uses all
+30 problems per year, per the plan doc), and writes
+`manifests/{name}.jsonl` with fields `problem_id`, `prompt`, `gold_answer`,
+`source_split`. Repo IDs and field names were verified against the live
+hub rather than trusted from the plan doc (see `scripts/build_manifests.py`'s
+docstring and `configs/models.yaml` for the verification notes and a couple
+of real schema surprises, e.g. `math-ai/aime24`'s answer living in a field
+literally called `solution`). These manifests are committed — never
+regenerate them; every experiment from Stage 2 onward reads from them.
+
+`configs/models.yaml` pins the exact generator/PRM/verifier repo IDs for
+Stage 1+ (no weights downloaded yet -- that's the GPU dev step, the actual
+first cloud spend).
+
+Note: `load_dataset` downloads full source files even when only sampling a
+subset -- building all six manifests pulled ~6.7GB into `~/.cache/huggingface`
+(mostly DeepMath-103K's 2.15GB parquet). One-time cost; safe to clear that
+cache afterward since the frozen `.jsonl` manifests are all any later stage
+reads from.
+
 ## An honest finding from building this
 
 `tests/test_toy_gmm.py::test_cess_variance_vs_tuned_fixed`'s docstring

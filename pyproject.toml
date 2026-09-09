@@ -12,6 +12,8 @@ dependencies = [
     "scipy",
     "matplotlib",
     "pyyaml",
+    "datasets",
+    "huggingface_hub",
 ]
 
 [project.optional-dependencies]

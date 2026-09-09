@@ -1,0 +1,37 @@
+# Stage 1, Asset 2: model selection (plan doc §5.2). Pinned repo IDs only
+# -- no weights downloaded yet, that's Stage 1's GPU dev step (rollout
+# generation), the first real cloud spend. Every ID below was checked
+# against the live HF hub before pinning, not copied from the plan doc.
+
+generator:
+  dev: Qwen/Qwen2.5-1.5B-Instruct
+  # Chosen over Qwen3-0.6B specifically because published PF/ePF numbers
+  # exist for the 1.5B model (plan doc §5.2) -- that's what makes Stage 2's
+  # "reproduce within ~2 points" hard gate checkable at all.
+  main:
+    - Qwen/Qwen2.5-7B-Instruct
+    - Qwen/Qwen3-1.7B
+
+prm:
+  strong: Qwen/Qwen2.5-Math-PRM-7B
+  weak: RLHFlow/Llama3.1-8B-PRM-Deepseek-Data
+  # Fine-tuned from meta-llama/Llama-3.1-8B-Instruct on RLHFlow/Deepseek-PRM-Data.
+  # Matches the doc's "A Llama-3.1-8B-based PRM" -- a different base model
+  # and training recipe from the strong Qwen PRM, needed for H3 (the
+  # robustness claim requires a genuinely differently-calibrated reward).
+
+verifier:
+  package: math-verify        # pip install math-verify
+  import_name: math_verify    # pypi name has a hyphen, import name doesn't
+  source: https://github.com/huggingface/Math-Verify
+
+serving: vllm
+
+# --- Notes from verifying against the live hub ---
+# - Qwen2.5-Math-PRM-7B: confirmed exists at exactly this path.
+# - Llama3.1-8B-PRM-Deepseek-Data: RLHFlow also publishes a
+#   "-Mistral-Data" variant trained on different rollouts; picked
+#   -Deepseek-Data with no strong reason to prefer one over the other --
+#   revisit if H3 results look sensitive to this choice.
+# - math-verify (not "math_verify") is the correct PyPI package name;
+#   requires Python >= 3.10 (fine, this repo's env is 3.12).

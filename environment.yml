@@ -10,3 +10,5 @@ dependencies:
       - matplotlib
       - pytest
       - pyyaml
+      - datasets          # Stage 1: pulling benchmark manifests
+      - huggingface_hub
