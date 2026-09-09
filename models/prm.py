@@ -31,33 +31,43 @@ from dataclasses import dataclass
 DEFAULT_SYSTEM_PROMPT = "Please reason step by step, and put your final answer within \\boxed{}."
 
 
-def _patch_dynamic_cache_from_legacy_cache() -> None:
-    """Qwen2.5-Math-PRM-7B's custom remote code (modeling_qwen2_rm.py)
-    calls DynamicCache.from_legacy_cache(past_key_values) in its forward()
-    -- a classmethod recent transformers removed entirely (the legacy
-    tuple-based KV-cache format was dropped in favor of always using Cache
-    objects). Same root cause as QwenMathPRMScorer's pad_token_id patch:
-    custom trust_remote_code written against an older transformers.
-    Restores the classmethod with its well-documented old behavior rather
-    than trying to rewrite Qwen's model file. Idempotent / safe to call
-    repeatedly -- no-ops if the method already exists (i.e. on an older
-    transformers where this was never removed).
+def _patch_dynamic_cache_compat() -> None:
+    """Qwen2.5-Math-PRM-7B's custom remote code (modeling_qwen2_rm.py) was
+    written against an older transformers whose Cache API had methods
+    since renamed or removed entirely (the legacy tuple-based KV-cache
+    format was dropped in favor of always using Cache objects). Each
+    method here restores one such removed API, with the exact behavior a
+    plain DynamicCache (no length cap) used to have. Idempotent / safe to
+    call repeatedly -- each patch no-ops if the method already exists
+    (i.e. on an older transformers where it was never removed).
+
+    Found by running the real model on a live GPU one AttributeError at a
+    time -- there may be more of these further into the same forward()
+    call; add here if so, same pattern.
     """
     from transformers import DynamicCache
 
-    if hasattr(DynamicCache, "from_legacy_cache"):
-        return
+    if not hasattr(DynamicCache, "from_legacy_cache"):
 
-    @classmethod
-    def from_legacy_cache(cls, past_key_values=None):
-        cache = cls()
-        if past_key_values is not None:
-            for layer_idx in range(len(past_key_values)):
-                key_states, value_states = past_key_values[layer_idx]
-                cache.update(key_states, value_states, layer_idx)
-        return cache
+        @classmethod
+        def from_legacy_cache(cls, past_key_values=None):
+            cache = cls()
+            if past_key_values is not None:
+                for layer_idx in range(len(past_key_values)):
+                    key_states, value_states = past_key_values[layer_idx]
+                    cache.update(key_states, value_states, layer_idx)
+            return cache
 
-    DynamicCache.from_legacy_cache = from_legacy_cache
+        DynamicCache.from_legacy_cache = from_legacy_cache
+
+    if not hasattr(DynamicCache, "get_usable_length"):
+        # DynamicCache has no max-length cap, so the old get_usable_length
+        # (which only trims when the cache would exceed a cap) always
+        # reduced to plain get_seq_length for this cache type.
+        def get_usable_length(self, new_seq_length, layer_idx: int = 0) -> int:
+            return self.get_seq_length(layer_idx)
+
+        DynamicCache.get_usable_length = get_usable_length
 
 
 @dataclass
@@ -103,7 +113,7 @@ class QwenMathPRMScorer:
         import torch
         from transformers import AutoConfig, AutoModel, AutoTokenizer
 
-        _patch_dynamic_cache_from_legacy_cache()
+        _patch_dynamic_cache_compat()
 
         self.model_id = model_id
         self.tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
