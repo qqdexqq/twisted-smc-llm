@@ -167,7 +167,14 @@ class QwenMathPRMScorer:
             messages, tokenize=False, add_generation_prompt=False
         )
         input_ids = self.tokenizer.encode(conversation_str, return_tensors="pt").to(self.model.device)
-        outputs = self.model(input_ids=input_ids)
+        # use_cache=False: this is a single-shot scoring pass, not
+        # autoregressive generation -- no KV cache is ever needed. Found
+        # on a live GPU run that skipping it also sidesteps a chain of
+        # transformers version-skew AttributeErrors in Qwen's custom
+        # remote code (from_legacy_cache / get_usable_length /
+        # to_legacy_cache, all removed Cache-API methods this custom
+        # code still calls) -- more robust than patching each one.
+        outputs = self.model(input_ids=input_ids, use_cache=False)
         token_masks = input_ids == self._step_sep_id
         step_rewards = self._make_step_rewards(outputs[0], token_masks)
         return PRMScore(step_scores=step_rewards[0])
@@ -206,7 +213,7 @@ class RLHFlowLlamaPRMScorer:
             )
             input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(self.model.device)
             with self._torch.no_grad():
-                logits = self.model(input_ids=input_ids).logits[0, -1]
+                logits = self.model(input_ids=input_ids, use_cache=False).logits[0, -1]
             pair = logits[[self._plus_id, self._minus_id]]
             p_plus = F.softmax(pair, dim=-1)[0].item()
             scores.append(p_plus)
