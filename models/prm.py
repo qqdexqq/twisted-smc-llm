@@ -7,20 +7,25 @@ fetch trail). They are NOT the same mechanism:
   - QwenMathPRMScorer: a dedicated reward head. Steps are joined by a
     literal "<extra_0>" separator token in a SINGLE forward pass; the
     per-step score is the softmax positive-class probability at each
-    "<extra_0>" position. Code below follows the model card's example
-    verbatim (including its make_step_rewards helper).
+    "<extra_0>" position. Code below started as the model card's example
+    verbatim, with one correction: the model card's own snippet reads
+    softmax channel [:, 1] as "positive," but on the actual checkpoint
+    that's backwards -- verified via scripts/diagnose_prm.py on a real
+    GPU (see _make_step_rewards for the specific evidence). Real corpus
+    data generated before this fix has its PRM scores inverted.
   - RLHFlowLlamaPRMScorer: a chat-formatted classifier convention. Each
     step becomes a user turn; the score is P("+") vs P("-") over the
     next-token logits right after that turn -- ONE forward pass PER STEP
     (more expensive; that's this model family's documented convention,
-    not an inefficiency introduced here).
+    not an inefficiency introduced here). Still UNVERIFIED -- never
+    exercised on a real GPU, unlike QwenMathPRMScorer. Before trusting a
+    real run: score a hand-picked correct step and a hand-picked wrong
+    step from the same problem (see scripts/diagnose_prm.py's pattern)
+    and confirm the correct one scores higher -- exactly the check that
+    caught QwenMathPRMScorer's channel-index bug above.
 
-Neither has been exercised by a real forward pass (no GPU on this
-machine). MockPRMScorer is the CPU-testable stand-in that exercises the
-surrounding pipeline via --dry-run. Before trusting a full batch on a
-real GPU: score a hand-picked correct step and a hand-picked wrong step
-from the same problem and confirm the correct one scores higher -- that's
-a five-minute check that catches a swapped-convention bug immediately.
+MockPRMScorer is the CPU-testable stand-in that exercises the
+surrounding pipeline via --dry-run.
 """
 
 from __future__ import annotations
@@ -163,7 +168,19 @@ class QwenMathPRMScorer:
         all_scores_res = []
         for i in range(probabilities.size(0)):
             sample = probabilities[i]
-            positive_probs = sample[sample != 0].view(-1, 2)[:, 1]
+            # Channel 0, not 1: verified empirically via scripts/diagnose_prm.py
+            # on the real model (not just Qwen's model-card example, which we
+            # followed verbatim but apparently misread/mismatched this
+            # checkpoint's actual class ordering). Three hand-constructed
+            # cases (correct step, wrong-arithmetic step, a step that
+            # self-contradicts the previous one) all confirmed channel 0 is
+            # "correct"/"good": e.g. a self-contradicting step scored 0.84 on
+            # channel 1 but 0.16 on channel 0 -- channel 1 ranked the bad step
+            # far ABOVE the good one, backwards. This single-index bug is also
+            # the full explanation for the negative PRM-score-vs-correctness
+            # correlation found in the first MATH500 calibration analysis --
+            # we were reading the literal inverse of the intended signal.
+            positive_probs = sample[sample != 0].view(-1, 2)[:, 0]
             all_scores_res.append(positive_probs.cpu().tolist())
         return all_scores_res
 
