@@ -108,13 +108,17 @@ vLLM-generation + PRM-scoring path has now been verified end to end on a
 live Kaggle T4 (3-problem sanity check: pass@1 = 0.667, a plausible real
 result, not the dry-run mock's structural 0).
 
-**Checkpointed, since free-tier GPU sessions have proven unreliable in
-practice:** each problem's rows are written to
-`{steps,rollouts}.checkpoint.jsonl` as soon as that problem finishes, not
-batched into one write at the end. Re-running the same command after a
-disconnect resumes automatically (`checkpoint found: X/128 problems
-already complete, Y remaining`) instead of losing all progress; pass
-`--fresh` to discard an existing checkpoint and start over.
+**Checkpointed at ROLLOUT granularity, since free-tier GPU sessions have
+proven unreliable in practice:** every single rollout's rows are written
+to `{steps,rollouts}.checkpoint.jsonl` (with a progress line printed) the
+moment that one rollout finishes scoring -- not batched per-problem, let
+alone to one write at the end. A crash loses at most the rollout in
+flight, never a whole problem's worth of (`--n=32`) PRM-scoring work.
+Re-running the same command after a disconnect resumes automatically
+(`checkpoint found: X/4096 rollouts already done (Y/128 problems fully
+complete), Z problems with remaining work`) -- a partially-scored problem
+only redoes its missing rollouts, not the ones already checkpointed;
+pass `--fresh` to discard an existing checkpoint and start over.
 
 Real bugs this surfaced, several only visible on actual GPU hardware
 (see git log for the full trail): `math-verify`'s per-call timeout spawns

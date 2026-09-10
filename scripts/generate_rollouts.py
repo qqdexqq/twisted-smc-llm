@@ -21,12 +21,14 @@ before ever touching a GPU. Real generation/scoring is UNVERIFIED until
 run for real; sanity-check the printed accuracy numbers and a few raw
 rows before trusting a full 128-problem x 32-rollout batch.
 
-Checkpointed: each problem's rows are appended to
-{steps,rollouts}.checkpoint.jsonl immediately after that problem's
-rollouts finish, not batched into one write at the end. Re-running the
-same command resumes automatically -- already-complete problems (exactly
---n rollout rows checkpointed) are skipped and only the remainder is
-generated/scored. Pass --fresh to ignore any existing checkpoint and
+Checkpointed at ROLLOUT granularity: every single rollout's rows are
+appended to {steps,rollouts}.checkpoint.jsonl the moment that one
+rollout finishes scoring -- not batched per-problem, let alone to one
+write at the end. A crash loses at most the current in-flight rollout,
+never a whole problem's worth of (possibly --n=32) PRM-scoring work.
+Re-running the same command resumes automatically: a partially-scored
+problem only regenerates/rescores its missing rollouts, not the ones
+already checkpointed. Pass --fresh to ignore any existing checkpoint and
 start over. JSONL, not Parquet, for the checkpoint itself: a crash
 mid-write leaves at most one truncated trailing line (safely discarded
 on resume), whereas an unclosed Parquet writer can leave an unreadable
@@ -99,11 +101,10 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
 
 def _append_jsonl(path: Path, rows: list[dict]) -> None:
     """Append and flush to durable storage immediately -- this is the
-    actual checkpoint boundary. Called once per completed problem, not
-    once per rollout: a crash mid-problem discards that whole problem's
-    partial rows on the next resume (see _load_checkpoint), which is a
-    deliberately simple tradeoff -- a few minutes of reprocessing beats
-    the complexity of resuming at the rollout level.
+    actual checkpoint boundary. Called once per ROLLOUT (not per
+    problem): a crash loses at most the single rollout currently being
+    written, never a whole problem's worth of (possibly --n=32) PRM
+    forward passes.
     """
     with path.open("a", encoding="utf-8") as f:
         for row in rows:
@@ -113,14 +114,23 @@ def _append_jsonl(path: Path, rows: list[dict]) -> None:
 
 
 def _load_checkpoint(
-    steps_ckpt_path: Path, rollouts_ckpt_path: Path, n: int, fresh: bool
+    steps_ckpt_path: Path, rollouts_ckpt_path: Path, fresh: bool
 ) -> tuple[list[dict], list[dict]]:
-    """Load and compact an existing checkpoint: keep only problems with
-    exactly `n` rollout rows (a problem with fewer was left mid-write by
-    a crash and is discarded, to be fully reprocessed rather than
-    resumed at the rollout level). Rewrites both checkpoint files to
-    that compacted state so a further crash this run doesn't compound
-    stale partial data on top of what's already been recovered.
+    """Load an existing checkpoint at rollout granularity: any
+    checkpointed (problem_id, rollout_id) with a rollout-summary row
+    counts as done and is never rescored, regardless of how many of that
+    problem's *other* rollouts are done -- resuming a partially-scored
+    problem only redoes its missing rollouts, not the whole problem.
+
+    Self-healing for one write-ordering edge case: a rollout's step rows
+    and its rollout-summary row are two separate appends (see
+    run()/_append_jsonl), so a crash between them can orphan one side.
+    The rollout-summary rows are the sole source of truth for "done";
+    any step rows without a matching (problem_id, rollout_id) among them
+    are dropped here. A rollout-summary row with no matching step rows
+    just means that rollout's step-level detail is lost but it still
+    correctly counts as done -- acceptable, minor data loss, not a
+    resume-correctness bug.
     """
     if fresh:
         _write_jsonl(steps_ckpt_path, [])
@@ -130,13 +140,8 @@ def _load_checkpoint(
     step_rows = _read_jsonl_safe(steps_ckpt_path)
     rollout_rows = _read_jsonl_safe(rollouts_ckpt_path)
 
-    rollout_counts = collections.Counter(r["problem_id"] for r in rollout_rows)
-    complete_ids = {pid for pid, count in rollout_counts.items() if count == n}
-    step_rows = [r for r in step_rows if r["problem_id"] in complete_ids]
-    rollout_rows = [r for r in rollout_rows if r["problem_id"] in complete_ids]
-
-    _write_jsonl(steps_ckpt_path, step_rows)
-    _write_jsonl(rollouts_ckpt_path, rollout_rows)
+    valid_keys = {(r["problem_id"], r["rollout_id"]) for r in rollout_rows}
+    step_rows = [r for r in step_rows if (r["problem_id"], r["rollout_id"]) in valid_keys]
     return step_rows, rollout_rows
 
 
@@ -167,15 +172,16 @@ def run(args: argparse.Namespace) -> dict:
     steps_ckpt_path = out_dir / "steps.checkpoint.jsonl"
     rollouts_ckpt_path = out_dir / "rollouts.checkpoint.jsonl"
 
-    step_rows, rollout_rows = _load_checkpoint(
-        steps_ckpt_path, rollouts_ckpt_path, args.n, args.fresh
-    )
-    complete_ids = {r["problem_id"] for r in rollout_rows}
-    remaining_problems = [p for p in problems if p["problem_id"] not in complete_ids]
-    if complete_ids:
+    step_rows, rollout_rows = _load_checkpoint(steps_ckpt_path, rollouts_ckpt_path, args.fresh)
+    existing_counts = collections.Counter(r["problem_id"] for r in rollout_rows)
+    remaining_problems = [p for p in problems if existing_counts.get(p["problem_id"], 0) < args.n]
+    total_target = len(problems) * args.n
+    if len(rollout_rows) or len(remaining_problems) < len(problems):
+        n_fully_done = len(problems) - len(remaining_problems)
         print(
-            f"checkpoint found: {len(complete_ids)}/{len(problems)} problems already "
-            f"complete, {len(remaining_problems)} remaining"
+            f"checkpoint found: {len(rollout_rows)}/{total_target} rollouts already done "
+            f"({n_fully_done}/{len(problems)} problems fully complete), "
+            f"{len(remaining_problems)} problems with remaining work"
         )
 
     if remaining_problems:
@@ -193,8 +199,13 @@ def run(args: argparse.Namespace) -> dict:
             args.generator, quantization=args.quantization
         )
         prompts = [p["prompt"] for p in remaining_problems]
+        # Per-prompt rollout count: a partially-scored problem only asks
+        # for exactly the rollouts it's still missing, not a fresh --n
+        # every time (wasteful generation, and would make already-checked
+        # rollout_ids collide with newly assigned ones).
+        needed_counts = [args.n - existing_counts.get(p["problem_id"], 0) for p in remaining_problems]
         completions_per_prompt = policy.generate(
-            prompts, n=args.n, temperature=args.temperature, max_tokens=args.max_tokens
+            prompts, n=needed_counts, temperature=args.temperature, max_tokens=args.max_tokens
         )
 
         if not args.dry_run:
@@ -209,15 +220,16 @@ def run(args: argparse.Namespace) -> dict:
         prm = build_prm_scorer(args.prm_type, args.prm, args.dry_run, load_in_8bit=args.prm_8bit)
 
         for problem, completions in zip(remaining_problems, completions_per_prompt):
-            problem_step_rows = []
-            problem_rollout_rows = []
-            for rollout_idx, completion in enumerate(completions):
+            start_id = existing_counts.get(problem["problem_id"], 0)
+            for offset, completion in enumerate(completions):
+                rollout_idx = start_id + offset
                 steps = split_into_steps(completion.text) or [completion.text.strip() or " "]
                 prm_scores = prm.score(problem["prompt"], steps).step_scores
+                this_step_rows = []
                 prefix = ""
                 for step_idx, (step_text, prm_score) in enumerate(zip(steps, prm_scores)):
                     prefix = f"{prefix}\n\n{step_text}" if prefix else step_text
-                    problem_step_rows.append(
+                    this_step_rows.append(
                         {
                             "problem_id": problem["problem_id"],
                             "rollout_id": rollout_idx,
@@ -232,24 +244,26 @@ def run(args: argparse.Namespace) -> dict:
                         }
                     )
                 final_answer = extract_boxed_answer(completion.text)
-                problem_rollout_rows.append(
-                    {
-                        "problem_id": problem["problem_id"],
-                        "rollout_id": rollout_idx,
-                        "final_answer": final_answer,
-                        "is_correct": check_correct(final_answer, problem["gold_answer"]),
-                        "total_tokens": completion.n_tokens,
-                        "n_steps": len(steps),
-                    }
-                )
+                this_rollout_row = {
+                    "problem_id": problem["problem_id"],
+                    "rollout_id": rollout_idx,
+                    "final_answer": final_answer,
+                    "is_correct": check_correct(final_answer, problem["gold_answer"]),
+                    "total_tokens": completion.n_tokens,
+                    "n_steps": len(steps),
+                }
 
-            # Checkpoint boundary: this problem is now fully done. A crash
-            # from here on loses at most the next in-progress problem, not
-            # the whole run -- see _load_checkpoint / _append_jsonl.
-            _append_jsonl(steps_ckpt_path, problem_step_rows)
-            _append_jsonl(rollouts_ckpt_path, problem_rollout_rows)
-            step_rows.extend(problem_step_rows)
-            rollout_rows.extend(problem_rollout_rows)
+                # Checkpoint boundary: ONE rollout. A crash from here on
+                # loses at most this single rollout's PRM-scoring work.
+                _append_jsonl(steps_ckpt_path, this_step_rows)
+                _append_jsonl(rollouts_ckpt_path, [this_rollout_row])
+                step_rows.extend(this_step_rows)
+                rollout_rows.append(this_rollout_row)
+                print(
+                    f"[{len(rollout_rows)}/{total_target}] checkpointed "
+                    f"{problem['problem_id']} rollout {rollout_idx}",
+                    flush=True,
+                )
 
     import pandas as pd
 

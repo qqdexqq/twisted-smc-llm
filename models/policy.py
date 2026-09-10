@@ -99,12 +99,13 @@ class MockPolicy:
         self._rng = random.Random(seed)
 
     def generate(
-        self, prompts: list[str], n: int, temperature: float, max_tokens: int
+        self, prompts: list[str], n: int | list[int], temperature: float, max_tokens: int
     ) -> list[list[RolloutCompletion]]:
+        n_list = [n] * len(prompts) if isinstance(n, int) else n
         results = []
-        for prompt in prompts:
+        for prompt, n_i in zip(prompts, n_list):
             completions = []
-            for _ in range(n):
+            for _ in range(n_i):
                 n_steps = self._rng.randint(1, 4)
                 paras = [
                     f"Mock reasoning step {j} for prompt hash {hash(prompt) % 10000}."
@@ -144,13 +145,24 @@ class VLLMPolicy:
         self._llm = LLM(**kwargs)
 
     def generate(
-        self, prompts: list[str], n: int, temperature: float, max_tokens: int
+        self, prompts: list[str], n: int | list[int], temperature: float, max_tokens: int
     ) -> list[list[RolloutCompletion]]:
         """One batched vLLM call across ALL prompts -- never loop
-        prompt-by-prompt for the main runs (plan doc §5.2)."""
+        prompt-by-prompt for the main runs (plan doc §5.2). `n` may be a
+        single int (same rollout count for every prompt) or a per-prompt
+        list (e.g. when resuming a partially-scored problem and only the
+        remaining few rollouts are actually needed) -- vLLM accepts a
+        list of SamplingParams matching len(prompts) for exactly this.
+        """
         from vllm import SamplingParams
 
-        params = SamplingParams(n=n, temperature=temperature, max_tokens=max_tokens, logprobs=0)
+        if isinstance(n, int):
+            params = SamplingParams(n=n, temperature=temperature, max_tokens=max_tokens, logprobs=0)
+        else:
+            params = [
+                SamplingParams(n=n_i, temperature=temperature, max_tokens=max_tokens, logprobs=0)
+                for n_i in n
+            ]
         outputs = self._llm.generate(prompts, params)
 
         results = []
