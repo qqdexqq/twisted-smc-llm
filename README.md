@@ -103,17 +103,39 @@ GPU). See the notebook's own markdown cells for the free-tier setup steps
 `scripts/generate_rollouts.py` (+ `models/policy.py`, `models/prm.py`,
 `eval/metrics.py`) is the underlying pipeline. Its plumbing -- manifest
 loading, step-splitting, answer-checking, Parquet schema -- is fully
-tested on this laptop via `--dry-run` (CPU-only mocks); the real vLLM
-generation and PRM scoring paths are written to each model's documented
-API but **unverified until run on an actual GPU** -- sanity-check the
-sanity-check cell's output before trusting the full batch.
+tested on this laptop via `--dry-run` (CPU-only mocks). The real
+vLLM-generation + PRM-scoring path has now been verified end to end on a
+live Kaggle T4 (3-problem sanity check: pass@1 = 0.667, a plausible real
+result, not the dry-run mock's structural 0).
 
-One real bug this surfaced even without a GPU: `math-verify`'s per-call
-timeout spawns a fresh `multiprocessing.Process` on Windows (no
-`signal.alarm` there), which fails silently in this environment and made
-every answer look wrong regardless of correctness. Worked around by
-disabling that timeout (`eval/metrics.py`); should work fine as-is on the
-Linux GPU box, where the signal-based path is used instead.
+**Checkpointed, since free-tier GPU sessions have proven unreliable in
+practice:** each problem's rows are written to
+`{steps,rollouts}.checkpoint.jsonl` as soon as that problem finishes, not
+batched into one write at the end. Re-running the same command after a
+disconnect resumes automatically (`checkpoint found: X/128 problems
+already complete, Y remaining`) instead of losing all progress; pass
+`--fresh` to discard an existing checkpoint and start over.
+
+Real bugs this surfaced, several only visible on actual GPU hardware
+(see git log for the full trail): `math-verify`'s per-call timeout spawns
+a fresh `multiprocessing.Process` on Windows (no `signal.alarm` there),
+which fails silently and made every answer look wrong regardless of
+correctness -- worked around by disabling that timeout, which uses the
+(working) signal-based path on Linux instead; Qwen's PRM ships custom
+`trust_remote_code` written against an older `transformers`, whose
+`PretrainedConfig`/`Cache` API has since dropped several methods that
+code still calls (`pad_token_id` defaulting, `DynamicCache.from_legacy_cache`
+/ `.get_usable_length`) -- patched via `use_cache=False` (we only ever
+need a single forward pass, no cache at all) plus a couple of narrow
+compatibility shims; `bitsandbytes`' int8 kernel errors on the PRM's tiny
+2-output classification head on Turing GPUs -- excluded from
+quantization via `llm_int8_skip_modules`; holding both the generator and
+the PRM resident on the GPU at once OOMs (vLLM never releases its
+reserved memory until the object is explicitly freed) -- fixed by
+generating first, then freeing vLLM's engine before loading the PRM; and
+`QwenMathPRMScorer.score()` was missing `torch.no_grad()`, silently
+building an unneeded backward graph on every call and inflating memory
+enough to OOM partway through a long run.
 
 ## An honest finding from building this
 
