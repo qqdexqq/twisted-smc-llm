@@ -1,7 +1,19 @@
-"""Placeholder. Entropic Particle Filtering's actual schedule (reactive
-annealing over the first 50% of steps, ESS threshold 0.5 -- see the plan
-doc §6/§9.2) is Stage-2 material: it needs the real LLM+PRM sampler loop
-to be a meaningful baseline against. Out of scope for Stage 0; kept as an
-empty file per the plan doc's "empty files fine" convention (§15) so the
-repo layout in §10 is already in place when Stage 2 starts.
+"""Filled in for Stage 2 (was an empty stub in Stage 0 -- "ePF's real
+schedule needs the Stage 2 LLM+PRM sampler to be a meaningful baseline
+against").
+
+Turns out ePF is NOT a ScheduleController at all: per the plan doc's
+§1.2 comparison table, ePF's beta stays pinned at 1 throughout (it never
+tempers psi -- that's specifically what distinguishes the proactive
+adaptive-tempering approach from ePF's reactive annealing). Its actual
+mechanism lives on the *resampling* axis instead. The real implementation
+is `smc.resampling_rules.EntropicResample`; this module just re-exports
+it so the repo layout planned back in Stage 0 (`smc/controllers/epf.py`)
+stays discoverable rather than silently vanishing.
 """
+
+from __future__ import annotations
+
+from smc.resampling_rules import EntropicResample
+
+__all__ = ["EntropicResample"]

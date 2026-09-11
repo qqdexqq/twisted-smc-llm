@@ -10,6 +10,9 @@ class FixedLinearController:
     non-adaptive baseline schedule everything else is compared against.
     """
 
+    # eval/compute_accounting.py: fixed schedules never call solve_beta_step.
+    uses_bisection = False
+
     def __init__(self, n_steps: int):
         if n_steps < 1:
             raise ValueError("n_steps must be >= 1")

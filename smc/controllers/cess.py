@@ -12,6 +12,9 @@ class CessAdaptiveController:
     smc/tempering.py's module docstring.
     """
 
+    # eval/compute_accounting.py: this controller solves solve_beta_step every step.
+    uses_bisection = True
+
     def __init__(self, kappa: float, n_iter: int = 30, min_step: float = 1e-4):
         self.kappa = kappa
         self.n_iter = n_iter

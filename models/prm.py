@@ -95,6 +95,15 @@ class MockPRMScorer:
             scores.append((h % 1000) / 1000.0)
         return PRMScore(step_scores=scores)
 
+    def score_batch(self, query: str, steps_per_particle: list[list[str]]) -> list[PRMScore]:
+        """Trivial loop over score() -- just needs to exist with the right
+        call shape so Sampler's CPU-testable path can exercise the
+        "one batched PRM call per global step" call site without a real
+        model. The real batching win (one forward pass, not N) only
+        matters for QwenMathPRMScorer.
+        """
+        return [self.score(query, steps) for steps in steps_per_particle]
+
 
 class QwenMathPRMScorer:
     """Qwen/Qwen2.5-Math-PRM-7B -- see the model card's Python usage
@@ -217,6 +226,63 @@ class QwenMathPRMScorer:
         token_masks = input_ids == self._step_sep_id
         step_rewards = self._make_step_rewards(outputs[0], token_masks)
         return PRMScore(step_scores=step_rewards[0])
+
+    def score_batch(
+        self, query: str, steps_per_particle: list[list[str]], system: str = DEFAULT_SYSTEM_PROMPT
+    ) -> list[PRMScore]:
+        """True batched PRM forward pass -- ONE model call scoring every
+        particle's (ragged) step list at once, instead of score()'s one
+        call per particle. This is the real gap the plan doc's pseudocode
+        assumed ("log_psi[i] = prm_score(prefix_i)  # batched PRM
+        forward") and that Stage 2's per-global-step accounting (§7.2,
+        PRM-forward-pass count) needs to be a meaningful metric.
+
+        Right-padding, not left: this is a single-shot scoring pass, not
+        autoregressive generation, so there's no "next token must be at
+        the end" requirement that left-padding exists for. An explicit
+        attention_mask keeps padded positions from contributing to any
+        other position's attention.
+
+        _make_step_rewards's existing per-row masking
+        (`probabilities * token_masks.unsqueeze(-1)`, then
+        `sample[sample != 0]`) already generalizes to ragged step counts
+        with no changes needed: each row is masked and filtered
+        independently, and padding never collides with a real <extra_0>
+        position since pad_token_id is forced to differ from it (see
+        __init__). Believed correct by inspection, but per the plan doc's
+        own caveat this must be verified empirically, not assumed --
+        that's scripts/diagnose_prm.py's score_batch()-vs-score()
+        equivalence check, a prerequisite before this is trusted inside
+        the Sampler loop, not optional.
+        """
+        import torch
+
+        if self.tokenizer.pad_token_id is None:
+            self.tokenizer.pad_token_id = (
+                self.tokenizer.eos_token_id if self.tokenizer.eos_token_id is not None else 0
+            )
+
+        conversation_strs = []
+        for steps in steps_per_particle:
+            messages = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": query},
+                {"role": "assistant", "content": "<extra_0>".join(steps) + "<extra_0>"},
+            ]
+            conversation_strs.append(
+                self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+            )
+
+        encoded = self.tokenizer(
+            conversation_strs, return_tensors="pt", padding=True, padding_side="right"
+        ).to(self.model.device)
+        with torch.no_grad():
+            outputs = self.model(
+                input_ids=encoded["input_ids"], attention_mask=encoded["attention_mask"], use_cache=False
+            )
+        token_masks = encoded["input_ids"] == self._step_sep_id
+        step_rewards = self._make_step_rewards(outputs[0], token_masks)
+        return [PRMScore(step_scores=rewards) for rewards in step_rewards]
 
 
 class RLHFlowLlamaPRMScorer:
