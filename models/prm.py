@@ -253,14 +253,38 @@ class QwenMathPRMScorer:
         return PRMScore(step_scores=step_rewards[0])
 
     def score_batch(
-        self, query: str, steps_per_particle: list[list[str]], system: str = DEFAULT_SYSTEM_PROMPT
+        self,
+        query: str,
+        steps_per_particle: list[list[str]],
+        system: str = DEFAULT_SYSTEM_PROMPT,
+        max_batch_size: int = 8,
     ) -> list[PRMScore]:
-        """True batched PRM forward pass -- ONE model call scoring every
-        particle's (ragged) step list at once, instead of score()'s one
-        call per particle. This is the real gap the plan doc's pseudocode
-        assumed ("log_psi[i] = prm_score(prefix_i)  # batched PRM
-        forward") and that Stage 2's per-global-step accounting (§7.2,
-        PRM-forward-pass count) needs to be a meaningful metric.
+        """True batched PRM forward pass -- scores every particle's
+        (ragged) step list, chunked into groups of at most
+        max_batch_size, instead of score()'s one call per particle
+        (still far fewer, larger calls than that). This is the real gap
+        the plan doc's pseudocode assumed ("log_psi[i] = prm_score(
+        prefix_i)  # batched PRM forward") and that Stage 2's
+        per-global-step accounting (§7.2, PRM-forward-pass count) needs
+        to be a meaningful metric.
+
+        max_batch_size caps how many particles go through ONE forward
+        pass, chunking internally rather than batching everything the
+        caller hands in at once. Found necessary on a real Kaggle T4
+        run: activation memory for a single batched forward pass scales
+        with batch_size * sequence_length, and vLLM + this PRM are BOTH
+        resident on the GPU for the whole Sampler run (unlike Stage 1) --
+        a real 16-particle batch, several global steps into a problem
+        (long accumulated prefixes), OOM'd with only ~500 MiB free
+        (CUDA out of memory allocating 674 MiB; vLLM + PRM already using
+        ~14 of 14.56 GiB). Chunking keeps total FLOPs and the actual
+        scores identical (each chunk is scored independently and
+        correctly -- this is not an approximation), it only caps PEAK
+        memory. NOTE: this means the true number of GPU forward passes
+        can exceed what eval/compute_accounting.py's n_prm_forward_passes
+        counts, since Sampler.propagate() calls this method once per
+        global step regardless of how many chunks it uses internally --
+        see that counter's own docstring.
 
         Right-padding, not left: this is a single-shot scoring pass, not
         autoregressive generation, so there's no "next token must be at
@@ -280,12 +304,25 @@ class QwenMathPRMScorer:
         equivalence check, a prerequisite before this is trusted inside
         the Sampler loop, not optional.
         """
-        import torch
-
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token_id = (
                 self.tokenizer.eos_token_id if self.tokenizer.eos_token_id is not None else 0
             )
+
+        results: list[PRMScore] = []
+        for start in range(0, len(steps_per_particle), max_batch_size):
+            chunk = steps_per_particle[start : start + max_batch_size]
+            results.extend(self._score_batch_chunk(query, chunk, system))
+        return results
+
+    def _score_batch_chunk(
+        self, query: str, steps_per_particle: list[list[str]], system: str
+    ) -> list[PRMScore]:
+        """One actual forward pass over <= max_batch_size particles --
+        the part score_batch() chunks over. Split out purely so
+        max_batch_size-driven chunking doesn't duplicate this logic.
+        """
+        import torch
 
         conversation_strs = []
         for steps in steps_per_particle:

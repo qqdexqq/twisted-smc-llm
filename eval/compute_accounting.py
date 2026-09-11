@@ -48,11 +48,23 @@ class ComputeAccountant:
         self.stats.n_policy_calls += 1
 
     def record_prm_forward(self, n_particles: int, n_steps_total: int) -> None:
-        """One call == one batched PRM forward pass (models/prm.py's
-        score_batch, the real efficiency win over N separate score()
-        calls -- see that module's docstring), scoring n_particles
-        particles' prefixes (n_steps_total steps in aggregate, since each
-        particle's step count is ragged).
+        """One call == one Sampler.propagate() invocation of
+        score_batch() (models/prm.py, the real efficiency win over N
+        separate score() calls -- see that module's docstring), scoring
+        n_particles particles' prefixes (n_steps_total steps in
+        aggregate, since each particle's step count is ragged).
+
+        CAVEAT, found on a real Kaggle OOM: QwenMathPRMScorer.score_batch
+        internally chunks a large particle batch into several smaller
+        forward passes (max_batch_size, default 8) to cap peak GPU
+        activation memory -- vLLM and this PRM are both resident for the
+        whole Sampler run, and a single 16-particle forward pass over
+        several steps' accumulated prefix text was enough to exhaust the
+        GPU. This counter still increments by exactly 1 per
+        propagate() call regardless of how many chunks score_batch()
+        used internally, so n_prm_forward_passes is a per-Sampler-step
+        call count, not a literal count of GPU forward passes, whenever
+        chunking is active.
         """
         self.stats.n_prm_forward_passes += 1
         self.stats.n_prm_particles_scored += n_particles
