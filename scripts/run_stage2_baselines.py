@@ -147,8 +147,21 @@ def build_method_config(method: str, args: argparse.Namespace) -> tuple[Schedule
     raise ValueError(f"unknown method {method!r}, expected one of {_METHODS}")
 
 
-def build_policy(dry_run: bool, generator: str, quantization: str | None):
-    return MockPolicy(seed=0) if dry_run else VLLMPolicy(generator, quantization=quantization)
+def build_policy(dry_run: bool, generator: str, quantization: str | None, gpu_memory_utilization: float):
+    # gpu_memory_utilization matters MUCH more here than in Stage 1's
+    # generate_rollouts.py. There, the policy and the PRM were never
+    # resident together (generate everything first, explicitly free the
+    # policy, only then load the PRM). Here, Sampler.propagate() calls
+    # BOTH the policy and the PRM scorer every single global step, so
+    # they must stay loaded on the GPU SIMULTANEOUSLY for the entire run.
+    # VLLMPolicy's own default (0.85) would starve the PRM of memory the
+    # moment it tries to load -- this CLI's default (see main()) is
+    # deliberately much lower to leave headroom for it.
+    return (
+        MockPolicy(seed=0)
+        if dry_run
+        else VLLMPolicy(generator, quantization=quantization, gpu_memory_utilization=gpu_memory_utilization)
+    )
 
 
 def build_prm_scorer(prm_type: str, prm_model: str, dry_run: bool, load_in_8bit: bool = False):
@@ -282,20 +295,22 @@ def run(args: argparse.Namespace) -> dict:
         for f in out_dir.glob("*.result.json"):
             f.unlink()
 
-    policy = build_policy(args.dry_run, args.generator, args.quantization)
-    if not args.dry_run:
-        import gc
-
-        import torch
-
-    prm = None  # loaded lazily below, AFTER checking what's actually left to do
-
     n_already_done = sum(1 for p in problems if (out_dir / f"{_safe_problem_id(p['problem_id'])}.result.json").exists())
     remaining = [p for p in problems if not (out_dir / f"{_safe_problem_id(p['problem_id'])}.result.json").exists()]
     if n_already_done:
         print(f"{n_already_done}/{len(problems)} problems already have a .result.json, skipping those")
 
     if remaining:
+        # Both loaded lazily, AFTER confirming there's actually work left --
+        # a resume that finds everything already done should never pay the
+        # (real, GPU-only) cost of standing up vLLM + the PRM just to do
+        # nothing, wasting scarce free-tier GPU-hours.
+        policy = build_policy(args.dry_run, args.generator, args.quantization, args.gpu_memory_utilization)
+        if not args.dry_run:
+            import gc
+
+            import torch
+
         prm = build_prm_scorer(args.prm_type, args.prm, args.dry_run, load_in_8bit=args.prm_8bit)
 
         controller, resampling_rule, n_children = build_method_config(args.method, args)
@@ -409,6 +424,15 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="use CPU-only mocks, no GPU/model needed")
     parser.add_argument("--fresh", action="store_true", help="ignore any existing checkpoint/result and start over")
     parser.add_argument("--quantization", default=None, help="generator quantization, e.g. 'bitsandbytes'")
+    parser.add_argument(
+        "--gpu-memory-utilization",
+        type=float,
+        default=0.5,
+        help="vLLM's fraction of GPU memory to reserve for the policy -- kept well below vLLM's own "
+        "0.85 default because, unlike Stage 1, the PRM must stay resident on the SAME GPU for the "
+        "entire run (see build_policy). Lower this further (e.g. 0.35-0.4) if the PRM still OOMs "
+        "while loading after the policy is up.",
+    )
     parser.add_argument("--prm-8bit", action="store_true", help="load the PRM in 8-bit (needs bitsandbytes)")
     args = parser.parse_args()
 
