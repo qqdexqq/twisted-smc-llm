@@ -8,11 +8,15 @@ fetch trail). They are NOT the same mechanism:
     literal "<extra_0>" separator token in a SINGLE forward pass; the
     per-step score is the softmax positive-class probability at each
     "<extra_0>" position. Code below started as the model card's example
-    verbatim, with one correction: the model card's own snippet reads
-    softmax channel [:, 1] as "positive," but on the actual checkpoint
-    that's backwards -- verified via scripts/diagnose_prm.py on a real
-    GPU (see _make_step_rewards for the specific evidence). Real corpus
-    data generated before this fix has its PRM scores inverted.
+    verbatim (channel [:, 1] as "positive"), but empirically the correct
+    channel has flipped TWICE across this project's history depending on
+    the transformers version loading the checkpoint -- currently channel
+    1, re-confirmed on transformers==4.57.6 (pinned via pyproject.toml's
+    gpu extras). See _make_step_rewards for the full history and why any
+    future transformers/vllm version change must re-run
+    scripts/diagnose_prm.py before trusting a score again. Real corpus
+    data generated under a different channel assumption has its PRM
+    scores inverted.
   - RLHFlowLlamaPRMScorer: a chat-formatted classifier convention. Each
     step becomes a user turn; the score is P("+") vs P("-") over the
     next-token logits right after that turn -- ONE forward pass PER STEP
@@ -190,19 +194,27 @@ class QwenMathPRMScorer:
         all_scores_res = []
         for i in range(probabilities.size(0)):
             sample = probabilities[i]
-            # Channel 0, not 1: verified empirically via scripts/diagnose_prm.py
-            # on the real model (not just Qwen's model-card example, which we
-            # followed verbatim but apparently misread/mismatched this
-            # checkpoint's actual class ordering). Three hand-constructed
-            # cases (correct step, wrong-arithmetic step, a step that
-            # self-contradicts the previous one) all confirmed channel 0 is
-            # "correct"/"good": e.g. a self-contradicting step scored 0.84 on
-            # channel 1 but 0.16 on channel 0 -- channel 1 ranked the bad step
-            # far ABOVE the good one, backwards. This single-index bug is also
-            # the full explanation for the negative PRM-score-vs-correctness
-            # correlation found in the first MATH500 calibration analysis --
-            # we were reading the literal inverse of the intended signal.
-            positive_probs = sample[sample != 0].view(-1, 2)[:, 0]
+            # Channel 1, not 0 -- and this index has now flipped TWICE across
+            # this project's history, which is itself the important finding:
+            # this checkpoint's positive/negative class ordering is NOT a
+            # fixed property of the weights, it depends on the transformers
+            # version loading them. First diagnosis (an unpinned, since-
+            # drifted environment) found channel 0 correct. After pinning
+            # transformers<5.0 (pyproject.toml's gpu extras -- see that
+            # pin's own commit message for why) to kill the instability
+            # transformers 5.x introduced, a clean re-run of
+            # scripts/diagnose_prm.py on transformers 4.57.6 found the
+            # OPPOSITE: channel 1 now gives a near-binary-clean signal
+            # (e.g. a self-contradicting step scored ~0.001 on channel 1 vs
+            # ~1.000 for staying correct) while channel 0 is backwards.
+            # CONSEQUENCE: any future change to the pinned transformers/vllm
+            # versions must re-run scripts/diagnose_prm.py and re-check this
+            # index before trusting a single PRM score -- do not assume it
+            # carries over. (This also means Stage 1's MATH500 rollout
+            # corpus, generated under the OLD channel-0 assumption, has its
+            # PRM scores inverted again and needs regenerating before its
+            # calibration finding can be trusted as-is.)
+            positive_probs = sample[sample != 0].view(-1, 2)[:, 1]
             all_scores_res.append(positive_probs.cpu().tolist())
         return all_scores_res
 

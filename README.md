@@ -170,6 +170,29 @@ position buckets. That's the "early reward signals are overconfident"
 premise the whole adaptive-tempering thesis leans on, demonstrated
 directly in real data rather than only cited from the literature.
 
+**Update (Stage 2 prep): the channel isn't a fixed property of the
+checkpoint -- it depends on the `transformers` version loading it.**
+`pyproject.toml`'s GPU extras were unpinned (`transformers>=4.40.0`), so
+every fresh `pip install --upgrade` on a new Kaggle session grabbed
+whatever was newest that day. On `transformers` 5.0.0/5.17.0, the model
+gave inconsistent, non-complementary-looking scores (channel 0 above
+*and* below channel 1 depending on the case) -- not usable either way.
+After pinning `transformers<5.0.0` (with a matching `vllm` range,
+checked directly against PyPI's release metadata, since an unpinned
+`vllm` alone would force `transformers>=5.10.4` and make the install
+unsatisfiable), a clean re-run on `transformers==4.57.6` gave a sharp,
+near-binary signal again -- but on **channel 1**, the opposite of what's
+described above. `models/prm.py::_make_step_rewards` now uses channel 1;
+see its comment for the full history. **The 20.6%→2.4% overconfidence
+finding above was computed under the channel-0 assumption and has not
+yet been reproduced on the pinned, channel-1-confirmed environment** --
+the qualitative "early scores are overconfident" shape is a reasonable
+bet to survive (it's a property of *when* in a rollout scores are taken,
+not which channel is used, as long as the channel is consistently
+correct), but treat the exact percentages as unconfirmed until the
+MATH500 corpus is regenerated and the calibration script rerun on this
+pinned setup.
+
 ## Stage 2: baseline samplers (PF / beam / twisted-SMC-fixed / ePF)
 
 The plan doc's hard gate (§6): reproduce standard particle filtering and
