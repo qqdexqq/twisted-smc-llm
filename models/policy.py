@@ -205,6 +205,28 @@ class VLLMPolicy:
         more robust startup. Set False to re-enable if a future
         environment's graph capture works and the throughput matters.
         """
+        # Must be set BEFORE `import vllm` -- attention-backend selection
+        # happens at engine-init time. enforce_eager alone did NOT fix the
+        # real Kaggle failure this project hit (see its own docstring
+        # above): FlashInfer runs a SEPARATE "kernel warmup" JIT-compile
+        # pass (vllm/model_executor/warmup/kernel_warmup.py) regardless of
+        # eager mode, to specialize its CUDA kernel to the model's exact
+        # shapes -- that compile step is what failed with "cannot find
+        # -lcuda" (a missing libcuda.so linker stub in that container,
+        # unrelated to this code). Forcing TRITON_ATTN sidesteps FlashInfer
+        # entirely: Triton's own JIT toolchain doesn't go through the same
+        # nvcc+ninja+`ld -lcuda` pipeline. Confirmed a valid choice for
+        # this exact setup, not a blind guess -- the failing engine's own
+        # startup log listed it as one of only 3 backends it considers
+        # usable for this model/hardware combination (FlashAttention-2 is
+        # ruled out outright on T4's compute capability 7.5, below FA2's
+        # >=8.0 requirement): ['FLASHINFER', 'TRITON_ATTN', 'FLEX_ATTENTION'].
+        # setdefault, not a hard override: lets an environment that already
+        # has FlashInfer working keep using it.
+        import os
+
+        os.environ.setdefault("VLLM_ATTENTION_BACKEND", "TRITON_ATTN")
+
         from vllm import LLM  # local import: keeps this module importable on CPU-only machines
 
         self.model_id = model_id
