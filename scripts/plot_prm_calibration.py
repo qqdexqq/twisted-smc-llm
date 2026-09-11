@@ -104,7 +104,18 @@ def main() -> None:
     if args.n_t_buckets == 1:
         axes = [axes]
 
-    print(f"{'t/T bucket':<14} {'n steps':>8} {'mean |gap|':>12} {'corr(score,correct)':>20}")
+    # "Overconfidence drop": empirical_accuracy peaks at some mid/high
+    # score bin, then FALLS at the very highest-score bin -- a classic
+    # overconfidence signature that a single linear correlation
+    # coefficient hides (it conflates the whole rise-then-reversal shape
+    # into one number, which can land near zero even when the reversal
+    # itself is large and highly systematic). This is the metric that
+    # actually shows the "early reward signals are overconfident" effect
+    # cleanly -- see README for the result on the real MATH500 corpus.
+    print(
+        f"{'t/T bucket':<14} {'n steps':>8} {'mean |gap|':>12} "
+        f"{'corr(score,correct)':>20} {'overconf. drop':>16}"
+    )
     for t_bucket, ax in enumerate(axes):
         df = results[t_bucket]
         lo, hi = t_edges[t_bucket], t_edges[t_bucket + 1]
@@ -123,7 +134,16 @@ def main() -> None:
         else:
             corr = float("nan")
         mean_gap = (df["mean_prm_score"] - df["empirical_accuracy"]).abs().mean() if len(df) else float("nan")
-        print(f"[{lo:.2f},{hi:.2f})    {len(sub):>8} {mean_gap:>12.3f} {corr:>20.3f}")
+        if len(df):
+            peak_acc = df["empirical_accuracy"].max()
+            top_score_acc = df.loc[df["mean_prm_score"].idxmax(), "empirical_accuracy"]
+            overconf_drop = peak_acc - top_score_acc
+        else:
+            overconf_drop = float("nan")
+        print(
+            f"[{lo:.2f},{hi:.2f})    {len(sub):>8} {mean_gap:>12.3f} "
+            f"{corr:>20.3f} {overconf_drop:>16.3f}"
+        )
 
     axes[0].set_ylabel("empirical P(rollout eventually correct)")
     axes[0].legend(loc="upper left", fontsize=8)

@@ -141,7 +141,36 @@ generating first, then freeing vLLM's engine before loading the PRM; and
 building an unneeded backward graph on every call and inflating memory
 enough to OOM partway through a long run.
 
-## An honest finding from building this
+## PRM calibration: a real bug, then a real finding
+
+`scripts/plot_prm_calibration.py` implements the plan doc's §5.3 evidence
+requirement: PRM score at step t vs. eventual rollout correctness,
+bucketed by normalized position (t/T). The first pass on the real
+MATH500 corpus showed something backwards -- PRM scores *negatively*
+correlated with correctness at every position. `scripts/diagnose_prm.py`
+(three hand-constructed cases: correct step, wrong-arithmetic step, a
+step that self-contradicts the previous one, run on the real GPU) traced
+this to a real bug: `QwenMathPRMScorer._make_step_rewards` read softmax
+channel `[:, 1]` as "positive," copied verbatim from Qwen's own
+model-card example -- but on the actual `Qwen2.5-Math-PRM-7B` checkpoint,
+that channel is backwards; channel `[:, 0]` is the one that scores
+correct steps high. Fixed in `models/prm.py`; the corpus was regenerated
+with `--fresh` and the corrected scores checked back in.
+
+With the fix, a genuinely interesting result: a plain linear correlation
+between PRM score and correctness is still small and slightly negative
+at every position (the reliability curves rise then *reverse* at the
+very highest scores -- classic overconfidence, which a single linear
+correlation coefficient hides). Looking at that reversal directly is
+where the real signal is: at the start of a rollout, the PRM's
+highest-confidence calls are **20.6 percentage points** less accurate
+than its calls one bin down; by the end of a rollout, that gap shrinks
+to **2.4 points** -- a clean, monotonic progression across all five
+position buckets. That's the "early reward signals are overconfident"
+premise the whole adaptive-tempering thesis leans on, demonstrated
+directly in real data rather than only cited from the literature.
+
+## An honest finding from Stage 0
 
 `tests/test_toy_gmm.py::test_cess_variance_vs_tuned_fixed`'s docstring
 documents that the literature's ~20% CESS-vs-tuned-fixed variance
@@ -149,4 +178,4 @@ reduction did not reproduce robustly on this particular toy target with a
 step-count-matched "tuned" fixed baseline, despite the tempering solver's
 core invariants (CESS boundary/monotonicity) being independently verified
 in `tests/test_tempering.py`. Read that docstring before relying on the
-variance-reduction claim going into Stage 1+.
+variance-reduction claim going into Stage 2+.
