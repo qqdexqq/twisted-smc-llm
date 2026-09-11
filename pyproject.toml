@@ -23,7 +23,31 @@ dependencies = [
 dev = ["pytest"]
 # GPU-only, not installable/usable on this laptop -- pulled in on the
 # rented box for real rollout generation (models/policy.py, models/prm.py).
-gpu = ["torch", "transformers>=4.40.0", "accelerate", "vllm", "bitsandbytes"]
+#
+# transformers is pinned BELOW 5.0, not just floored at 4.40 -- found the
+# hard way, twice now: Qwen2.5-Math-PRM-7B's custom trust_remote_code
+# architecture (modeling_qwen2_rm.py) produces genuinely different,
+# internally-inconsistent softmax outputs on transformers 5.x (e.g. a
+# self-contradicting reasoning step scoring BETTER than staying correct)
+# versus the clean, monotonic signal this project's whole PRM-calibration
+# finding is built on -- obtained on a pre-5.0 transformers. An unpinned
+# `pip install --upgrade` on any given day just grabs whatever's newest,
+# which silently swapped the ground this project's core finding stands
+# on.
+#
+# vllm is pinned to match: its OWN requires_dist moves in lockstep with
+# transformers as it releases (checked directly against PyPI's release
+# metadata, not guessed) -- vllm<=0.11.x wants older transformers still,
+# vllm 0.12.0-0.19.x is the whole window that accepts "transformers<5,
+# >=4.56.0", and vllm>=0.20.0 starts pulling transformers 5.x back in.
+# Without pinning vllm too, "transformers<5.0.0" alone is UNSATISFIABLE
+# (pip would resolve to the newest vllm, which hard-requires
+# transformers>=5.10.4, and fail). >=4.56.0 is the highest transformers
+# floor this window allows, not necessarily the exact version the
+# original clean 0.72-vs-0.12 finding used -- this pin stops the
+# unbounded drift into 5.x, but the signal must still be RE-VERIFIED on
+# this exact pinned combo (scripts/diagnose_prm.py), not assumed clean.
+gpu = ["torch", "transformers>=4.56.0,<5.0.0", "accelerate", "vllm>=0.12.0,<0.20.0", "bitsandbytes"]
 
 [tool.setuptools.packages.find]
 include = ["smc*", "toy*", "models*", "eval*"]
