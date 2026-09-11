@@ -88,6 +88,15 @@ def main() -> None:
 
     from models.prm import _patch_dynamic_cache_compat
 
+    if args.prm_8bit:
+        # See models/prm.py::QwenMathPRMScorer.__init__ for why this is
+        # here at all -- this script's own raw AutoModel diagnostic (cases
+        # A/B/C below) triggers the same per-forward-pass warning spam,
+        # bypassing that class entirely, so it needs the same suppression.
+        import warnings
+
+        warnings.filterwarnings("ignore", message=r"MatMul8bitLt: inputs will be cast")
+
     print(f"torch: {torch.__version__}  cuda: {torch.version.cuda}")
     import transformers
 

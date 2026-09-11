@@ -127,6 +127,19 @@ class QwenMathPRMScorer:
         import torch
         from transformers import AutoConfig, AutoModel, AutoTokenizer
 
+        if load_in_8bit or load_in_4bit:
+            # bitsandbytes re-emits this warning on EVERY forward pass (once
+            # per quantized Linear layer -- hundreds of times for a 28-layer
+            # 7B model), not once like a normal Python warning. Harmless
+            # (it's just describing its own internal dtype cast) but it
+            # drowns out actually useful output -- found the hard way when a
+            # real Kaggle run's pasted output got truncated by this spam
+            # before the score_batch() equivalence check result it needed
+            # to show ever appeared.
+            import warnings
+
+            warnings.filterwarnings("ignore", message=r"MatMul8bitLt: inputs will be cast")
+
         _patch_dynamic_cache_compat()
 
         self.model_id = model_id
