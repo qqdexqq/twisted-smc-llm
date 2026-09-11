@@ -205,28 +205,6 @@ class VLLMPolicy:
         more robust startup. Set False to re-enable if a future
         environment's graph capture works and the throughput matters.
         """
-        # Must be set BEFORE `import vllm` -- attention-backend selection
-        # happens at engine-init time. enforce_eager alone did NOT fix the
-        # real Kaggle failure this project hit (see its own docstring
-        # above): FlashInfer runs a SEPARATE "kernel warmup" JIT-compile
-        # pass (vllm/model_executor/warmup/kernel_warmup.py) regardless of
-        # eager mode, to specialize its CUDA kernel to the model's exact
-        # shapes -- that compile step is what failed with "cannot find
-        # -lcuda" (a missing libcuda.so linker stub in that container,
-        # unrelated to this code). Forcing TRITON_ATTN sidesteps FlashInfer
-        # entirely: Triton's own JIT toolchain doesn't go through the same
-        # nvcc+ninja+`ld -lcuda` pipeline. Confirmed a valid choice for
-        # this exact setup, not a blind guess -- the failing engine's own
-        # startup log listed it as one of only 3 backends it considers
-        # usable for this model/hardware combination (FlashAttention-2 is
-        # ruled out outright on T4's compute capability 7.5, below FA2's
-        # >=8.0 requirement): ['FLASHINFER', 'TRITON_ATTN', 'FLEX_ATTENTION'].
-        # setdefault, not a hard override: lets an environment that already
-        # has FlashInfer working keep using it.
-        import os
-
-        os.environ.setdefault("VLLM_ATTENTION_BACKEND", "TRITON_ATTN")
-
         from vllm import LLM  # local import: keeps this module importable on CPU-only machines
 
         self.model_id = model_id
@@ -235,6 +213,37 @@ class VLLMPolicy:
             dtype=dtype,
             gpu_memory_utilization=gpu_memory_utilization,
             enforce_eager=enforce_eager,
+            # Forces TRITON_ATTN, sidestepping FlashInfer's kernel-compile
+            # entirely. enforce_eager alone did NOT fix the real Kaggle
+            # failure this project hit: FlashInfer runs a SEPARATE "kernel
+            # warmup" JIT-compile pass (vllm/model_executor/warmup/
+            # kernel_warmup.py) regardless of eager mode, to specialize its
+            # CUDA kernel to the model's exact shapes -- that compile step
+            # failed with "cannot find -lcuda" (a missing libcuda.so linker
+            # stub in that container, unrelated to this code). Triton's own
+            # JIT toolchain doesn't go through the same nvcc+ninja+ld -lcuda
+            # pipeline. Confirmed valid for this exact setup (not a blind
+            # guess): the failing engine's own log listed TRITON_ATTN as one
+            # of only 3 backends it considers usable here (FlashAttention-2
+            # is ruled out outright on T4's compute capability 7.5, below
+            # FA2's >=8.0 requirement): ['FLASHINFER', 'TRITON_ATTN',
+            # 'FLEX_ATTENTION'].
+            #
+            # IMPORTANT, found the hard way: the OLDER mechanism for this,
+            # the VLLM_ATTENTION_BACKEND env var, does NOT work on the vllm
+            # actually pinned here (pyproject.toml's gpu extras resolve to
+            # 0.19.1) -- it was silently accepted-but-ignored ("Unknown
+            # vLLM environment variable detected", no effect on backend
+            # selection). Checked directly against vllm's GitHub source
+            # across the pinned version range: the env var existed in
+            # 0.12.0 but was replaced by this `attention_backend` EngineArgs
+            # field/kwarg by 0.15.0 -- since pip always resolves to the
+            # newest version satisfying pyproject.toml's range, the kwarg
+            # (not the env var) is the mechanism that actually matches what
+            # gets installed. A plain string works: AttentionConfig's own
+            # pydantic validator upper-cases and looks it up in
+            # AttentionBackendEnum.
+            attention_backend="TRITON_ATTN",
         )
         if quantization:
             kwargs["quantization"] = quantization
