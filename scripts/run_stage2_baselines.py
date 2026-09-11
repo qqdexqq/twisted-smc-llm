@@ -147,7 +147,9 @@ def build_method_config(method: str, args: argparse.Namespace) -> tuple[Schedule
     raise ValueError(f"unknown method {method!r}, expected one of {_METHODS}")
 
 
-def build_policy(dry_run: bool, generator: str, quantization: str | None, gpu_memory_utilization: float):
+def build_policy(
+    dry_run: bool, generator: str, quantization: str | None, gpu_memory_utilization: float, enforce_eager: bool
+):
     # gpu_memory_utilization matters MUCH more here than in Stage 1's
     # generate_rollouts.py. There, the policy and the PRM were never
     # resident together (generate everything first, explicitly free the
@@ -160,7 +162,12 @@ def build_policy(dry_run: bool, generator: str, quantization: str | None, gpu_me
     return (
         MockPolicy(seed=0)
         if dry_run
-        else VLLMPolicy(generator, quantization=quantization, gpu_memory_utilization=gpu_memory_utilization)
+        else VLLMPolicy(
+            generator,
+            quantization=quantization,
+            gpu_memory_utilization=gpu_memory_utilization,
+            enforce_eager=enforce_eager,
+        )
     )
 
 
@@ -305,7 +312,9 @@ def run(args: argparse.Namespace) -> dict:
         # a resume that finds everything already done should never pay the
         # (real, GPU-only) cost of standing up vLLM + the PRM just to do
         # nothing, wasting scarce free-tier GPU-hours.
-        policy = build_policy(args.dry_run, args.generator, args.quantization, args.gpu_memory_utilization)
+        policy = build_policy(
+            args.dry_run, args.generator, args.quantization, args.gpu_memory_utilization, not args.disable_eager
+        )
         if not args.dry_run:
             import gc
 
@@ -434,6 +443,14 @@ def main() -> None:
         "while loading after the policy is up.",
     )
     parser.add_argument("--prm-8bit", action="store_true", help="load the PRM in 8-bit (needs bitsandbytes)")
+    parser.add_argument(
+        "--disable-eager",
+        action="store_true",
+        help="let vLLM use CUDA-graph capture instead of eager mode (models/policy.py::VLLMPolicy defaults to "
+        "eager -- found necessary on a real Kaggle T4 run where graph-capture warmup triggered a FlashInfer "
+        "JIT-compile failure unrelated to this code). Only pass this if graph capture is confirmed working "
+        "in your environment and the throughput matters.",
+    )
     args = parser.parse_args()
 
     summary = run(args)

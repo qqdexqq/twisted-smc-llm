@@ -189,11 +189,31 @@ class VLLMPolicy:
         dtype: str = "auto",
         quantization: str | None = None,
         gpu_memory_utilization: float = 0.85,
+        enforce_eager: bool = True,
     ):
+        """enforce_eager=True by default -- skips vLLM's CUDA-graph
+        capture/warmup entirely. Found necessary on a real Kaggle T4 run:
+        that warmup step (profile_cudagraph_memory -> _warmup_and_capture)
+        triggers FlashInfer's JIT kernel compilation, which failed there
+        with "cannot find -lcuda" (a missing libcuda.so linker stub in
+        that specific container image, unrelated to this code). Separately
+        justified for Stage 2 regardless of that failure: CUDA graphs
+        assume fixed batch shapes, but generate_step()'s batch composition
+        changes every global step as particles finish at different times
+        -- the shape-matching win graphs exist for barely applies here,
+        so eager mode trades a bit of raw throughput for much simpler,
+        more robust startup. Set False to re-enable if a future
+        environment's graph capture works and the throughput matters.
+        """
         from vllm import LLM  # local import: keeps this module importable on CPU-only machines
 
         self.model_id = model_id
-        kwargs = dict(model=model_id, dtype=dtype, gpu_memory_utilization=gpu_memory_utilization)
+        kwargs = dict(
+            model=model_id,
+            dtype=dtype,
+            gpu_memory_utilization=gpu_memory_utilization,
+            enforce_eager=enforce_eager,
+        )
         if quantization:
             kwargs["quantization"] = quantization
         self._llm = LLM(**kwargs)
