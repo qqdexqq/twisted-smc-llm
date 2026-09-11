@@ -15,7 +15,7 @@ from smc.tempering import BetaDecision
 class _FakeController:
     """Always proposes a fixed beta, ignoring log_W/log_G entirely --
     used only to force a deterministic "horizon exhausted before beta
-    reached 1.0" scenario for _terminal_correction, without depending on
+    reached 1.0" scenario for terminal_correction, without depending on
     a real adaptive controller's stochastic convergence speed.
     """
 
@@ -79,7 +79,7 @@ class TestRunEndToEnd:
     def test_terminal_correction_forces_beta_one_when_horizon_too_short(self):
         # A controller pinned to always propose beta=0.3, given only one
         # global step: forces the "beta < 1.0 at horizon" branch
-        # (_terminal_correction), unreachable for PF/ePF's fixed schedule
+        # (terminal_correction), unreachable for PF/ePF's fixed schedule
         # in this push's scope but required once an adaptive controller
         # (Stage 3 preview) is plugged in and doesn't finish in time.
         sampler = Sampler(
@@ -98,7 +98,7 @@ class TestRunEndToEnd:
         assert result.history[0].beta == pytest.approx(0.3)
 
     def test_terminal_correction_matches_hand_computed_weight_update(self):
-        # Direct unit check on _terminal_correction's math, independent of
+        # Direct unit check on terminal_correction's math, independent of
         # run()'s stochastic dynamics: with log_psi frozen (no new step),
         # log_offset must be exactly 0, so the whole increment is
         # (1 - beta_prev) * log_psi_cumulative per particle.
@@ -113,7 +113,7 @@ class TestRunEndToEnd:
             dtype=object,
         )
         log_W = np.log(np.array([0.5, 0.5]))
-        particles_out, log_W_out, log_Z_inc, beta_out = sampler._terminal_correction(particles, log_W, beta_prev=0.4)
+        particles_out, log_W_out, log_Z_inc, beta_out = sampler.terminal_correction(particles, log_W, beta_prev=0.4)
         assert beta_out == 1.0
         expected_log_w_inc = 0.6 * np.array([0.4, -0.2])  # (1 - 0.4) * log_psi_cumulative
         expected_unnorm = log_W + expected_log_w_inc
@@ -127,7 +127,7 @@ class TestRunEndToEnd:
         sampler = _pf_sampler()
         particles = np.array([new_particle("q", lineage_id=0)], dtype=object)
         log_W = np.array([0.0])
-        particles_out, log_W_out, log_Z_inc, beta_out = sampler._terminal_correction(particles, log_W, beta_prev=1.0)
+        particles_out, log_W_out, log_Z_inc, beta_out = sampler.terminal_correction(particles, log_W, beta_prev=1.0)
         assert beta_out == 1.0
         assert log_Z_inc == 0.0
         np.testing.assert_array_equal(log_W_out, log_W)

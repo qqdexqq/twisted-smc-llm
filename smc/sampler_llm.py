@@ -257,7 +257,7 @@ class Sampler:
             self.accountant.record_resample_event(diag)
         return new_particles, new_log_W, resampled, diag
 
-    def _terminal_correction(
+    def terminal_correction(
         self, particles: np.ndarray, log_W: np.ndarray, beta_prev: float
     ) -> tuple[np.ndarray, np.ndarray, float, float]:
         """Force beta -> 1.0 if the horizon was exhausted before any
@@ -266,6 +266,12 @@ class Sampler:
         (FixedLinearController(n_steps=1) always jumps beta to 1.0 on the
         very first step), but required in general once an adaptive
         controller (Stage 3 preview) is plugged in.
+
+        Public (not a leading-underscore helper): scripts/run_stage2_
+        baselines.py drives Sampler's propagate/weight/resample loop
+        directly rather than calling run() as one opaque call (so it can
+        checkpoint after every global step), and needs this exact
+        correction available at the end of its own loop too.
         """
         if beta_prev >= 1.0 - _BETA_EPS:
             return particles, log_W, 0.0, 1.0
@@ -323,7 +329,7 @@ class Sampler:
             beta = beta_new
 
         if beta < 1.0:
-            particles, log_W, log_Z_inc, beta = self._terminal_correction(particles, log_W, beta)
+            particles, log_W, log_Z_inc, beta = self.terminal_correction(particles, log_W, beta)
             log_Z_hat += log_Z_inc
 
         assert abs(beta - 1.0) < 1e-9, f"terminal beta={beta}, expected exactly 1.0"
