@@ -170,6 +170,48 @@ position buckets. That's the "early reward signals are overconfident"
 premise the whole adaptive-tempering thesis leans on, demonstrated
 directly in real data rather than only cited from the literature.
 
+## Stage 2: baseline samplers (PF / beam / twisted-SMC-fixed / ePF)
+
+The plan doc's hard gate (§6): reproduce standard particle filtering and
+Entropic Particle Filtering (ePF) on MATH500 with Qwen2.5-1.5B within
+~2 accuracy points of published numbers before any further comparison
+(and eventually the actual novel method) means anything.
+
+All four baselines share one driver, `smc/sampler_llm.py::Sampler`
+(`propagate()` / `weight()` / `resample()` / `run()`) — which baseline
+you get is entirely a function of which `ScheduleController` /
+`ResamplingRule` / `n_children` triple you hand it
+(`scripts/run_stage2_baselines.py::build_method_config`), not a
+per-method branch inside `Sampler` itself. New modules:
+`smc/weighting.py` (the log-G/log-offset seam into `smc/tempering.py`'s
+frozen bisection solver), `smc/llm_particle.py`, `smc/selection.py`,
+`smc/resampling_rules.py` (`EssTriggeredResample`, `DeterministicTopK`,
+`EntropicResample` — ePF turned out not to be a `ScheduleController` at
+all; its novelty lives entirely on the resampling axis), plus
+`eval/answer_selection.py` (argmax-log-psi, held constant across all
+four methods per §7.1 — never `log_W`) and `eval/compute_accounting.py`.
+
+`scripts/run_stage2_baselines.py` checkpoints after every global SMC
+step (finer than Stage 1's per-rollout checkpointing — a single MATH500
+problem can run dozens of SMC steps) and resumes correctly after a
+simulated mid-run crash, verified with `--dry-run` (CPU-only mocks, no
+GPU). 126 tests total, all passing.
+
+**Scope for this push:** the shared architecture above is fully built
+and CPU-verified; only PF and ePF are being taken through real-GPU
+verification against published numbers now. Beam search and
+twisted-SMC-fixed are wired structurally (their own real-GPU
+verification is a deliberate follow-up). Next, on rented GPU hardware:
+
+```
+python scripts/diagnose_prm.py --prm-8bit                        # score_batch() vs score() equivalence, prerequisite
+python scripts/run_stage2_baselines.py --method pf  --manifest manifests/math500_128.jsonl --n-particles 16
+python scripts/run_stage2_baselines.py --method epf --manifest manifests/math500_128.jsonl --n-particles 16
+```
+
+If PF/ePF accuracy isn't within ~2 points of published numbers: stop and
+debug before anything downstream is trusted (the doc's own instruction).
+
 ## An honest finding from Stage 0
 
 `tests/test_toy_gmm.py::test_cess_variance_vs_tuned_fixed`'s docstring
