@@ -46,6 +46,21 @@ import argparse
 import dataclasses
 import json
 import os
+
+# Must happen before torch's CUDA context is created (it's read once at
+# init, not per-allocation) -- so before any of this module's own imports
+# below, since models.policy -> vllm and models.prm -> transformers both
+# pull in torch. Found necessary on a real Kaggle T4 run: a long-running
+# problem (many accumulated reasoning steps -> longer sequences each
+# chunked PRM forward pass) OOM'd with PyTorch's own error message
+# pointing at fragmentation ("926.30 MiB is reserved by PyTorch but
+# unallocated... try setting PYTORCH_ALLOC_CONF=expandable_segments:True")
+# -- vLLM and the PRM allocating/freeing many differently-shaped batches
+# over a long run is exactly the pattern this setting exists for.
+# setdefault, not a hard override: an environment that already sets this
+# (e.g. via a notebook %env cell) keeps its own value.
+os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
+
 from pathlib import Path
 
 import numpy as np

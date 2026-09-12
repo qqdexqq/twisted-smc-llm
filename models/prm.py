@@ -257,7 +257,7 @@ class QwenMathPRMScorer:
         query: str,
         steps_per_particle: list[list[str]],
         system: str = DEFAULT_SYSTEM_PROMPT,
-        max_batch_size: int = 8,
+        max_batch_size: int = 4,
     ) -> list[PRMScore]:
         """True batched PRM forward pass -- scores every particle's
         (ragged) step list, chunked into groups of at most
@@ -270,21 +270,31 @@ class QwenMathPRMScorer:
 
         max_batch_size caps how many particles go through ONE forward
         pass, chunking internally rather than batching everything the
-        caller hands in at once. Found necessary on a real Kaggle T4
-        run: activation memory for a single batched forward pass scales
+        caller hands in at once. Found necessary on TWO real Kaggle T4
+        OOMs: activation memory for a single batched forward pass scales
         with batch_size * sequence_length, and vLLM + this PRM are BOTH
-        resident on the GPU for the whole Sampler run (unlike Stage 1) --
-        a real 16-particle batch, several global steps into a problem
-        (long accumulated prefixes), OOM'd with only ~500 MiB free
-        (CUDA out of memory allocating 674 MiB; vLLM + PRM already using
-        ~14 of 14.56 GiB). Chunking keeps total FLOPs and the actual
-        scores identical (each chunk is scored independently and
-        correctly -- this is not an approximation), it only caps PEAK
-        memory. NOTE: this means the true number of GPU forward passes
-        can exceed what eval/compute_accounting.py's n_prm_forward_passes
-        counts, since Sampler.propagate() calls this method once per
-        global step regardless of how many chunks it uses internally --
-        see that counter's own docstring.
+        resident on the GPU for the whole Sampler run (unlike Stage 1).
+        First OOM (16-particle batch, early in a problem) motivated the
+        original max_batch_size=8; that still wasn't enough for a SECOND
+        OOM much later in a run (many accumulated reasoning steps ->
+        longer sequences even within an 8-particle chunk), whose own
+        error pointed at allocator fragmentation from repeatedly
+        allocating/freeing differently-shaped batches ("reserved by
+        PyTorch but unallocated... try PYTORCH_ALLOC_CONF=
+        expandable_segments:True" -- set in scripts/run_stage2_
+        baselines.py, before any torch import). Chunking keeps total
+        FLOPs and the actual scores identical (each chunk is scored
+        independently and correctly -- this is not an approximation),
+        it only caps PEAK memory. torch.cuda.empty_cache() between
+        chunks (see _score_batch_chunk's caller loop below) actively
+        hands unallocated-but-reserved memory back to the allocator's
+        free pool between differently-shaped chunks, directly targeting
+        that fragmentation signature rather than just shrinking the cap
+        and hoping. NOTE: this means the true number of GPU forward
+        passes can exceed what eval/compute_accounting.py's
+        n_prm_forward_passes counts, since Sampler.propagate() calls
+        this method once per global step regardless of how many chunks
+        it uses internally -- see that counter's own docstring.
 
         Right-padding, not left: this is a single-shot scoring pass, not
         autoregressive generation, so there's no "next token must be at
@@ -310,10 +320,32 @@ class QwenMathPRMScorer:
             )
 
         results: list[PRMScore] = []
-        for start in range(0, len(steps_per_particle), max_batch_size):
+        n_chunks = (len(steps_per_particle) + max_batch_size - 1) // max_batch_size
+        for i, start in enumerate(range(0, len(steps_per_particle), max_batch_size)):
             chunk = steps_per_particle[start : start + max_batch_size]
             results.extend(self._score_batch_chunk(query, chunk, system))
+            if i < n_chunks - 1:
+                # Between chunks only (not after the last one -- the
+                # caller may immediately need the GPU for the next
+                # generation step, and an empty_cache() right before that
+                # would just force it to reallocate from scratch).
+                self._maybe_empty_cuda_cache()
         return results
+
+    @staticmethod
+    def _maybe_empty_cuda_cache() -> None:
+        # torch is a GPU-only dependency (not installed on this laptop --
+        # see pyproject.toml's gpu extras), so this stays a no-op in the
+        # CPU-only tests that exercise score_batch()'s chunking logic via
+        # a stubbed _score_batch_chunk (see tests/test_prm.py). A real GPU
+        # run always has torch installed, so this except branch is dead
+        # code there -- purely a test-environment escape hatch, not
+        # something that could hide a real error in production use.
+        try:
+            import torch
+        except ModuleNotFoundError:
+            return
+        torch.cuda.empty_cache()
 
     def _score_batch_chunk(
         self, query: str, steps_per_particle: list[list[str]], system: str
